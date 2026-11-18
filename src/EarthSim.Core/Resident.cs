@@ -25,7 +25,7 @@ public enum Sex { Male, Female }
 
 public enum JobType { None, Woodcutter, Blacksmith, Explorer, Carpenter, Pharmacist }
 
-public enum LocationType { Town, Forest, Cave }
+public enum LocationType { Town, Forest, Mine, Cave, Dungeon }
 
 /// <summary>図書館の本から得る知識。住人は最初は全て持っていない（知識の基本原則）。</summary>
 public enum KnowledgeType { Blacksmithing, Mining, Logging, Carpentry, Pharmacy }

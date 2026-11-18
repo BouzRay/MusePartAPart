@@ -51,7 +51,7 @@ public sealed record SimulationResult
 /// </summary>
 public sealed class Simulation
 {
-    public const string SimulationVersion = "0.4.0";
+    public const string SimulationVersion = "0.5.0";
 
     private static readonly string[] DiscoveryPool =
     {
@@ -427,6 +427,9 @@ public sealed class Simulation
         if (adult)
         {
             scores.Add(("採取", p.Planning * 0.4 + p.Greed * 0.4 + (_food < AliveCount() * 3 ? 25 : 0) + 10));
+            // 伐採：伐採の知識が要る。森林で木材を本格的に得る行動（木材が足りない時ほど選ばれる）
+            if (r.Knowledge.Contains(KnowledgeType.Logging))
+                scores.Add(("伐採", p.Cooperativeness * 0.3 + p.Planning * 0.3 + p.Obsession * 0.2 + (_wood < AliveCount() * 8 ? 12 : 0) + 8));
             // 採掘：採掘の知識が要る。鉱石が十分ある時は掘らない（掘りすぎ防止）
             if (r.Knowledge.Contains(KnowledgeType.Mining) && _ore < AliveCount() * 3 + 20)
                 scores.Add(("採掘", p.Curiosity * 0.3 + p.RiskTolerance * 0.4 + p.Greed * 0.3 + 5));
@@ -483,17 +486,15 @@ public sealed class Simulation
             case "採取":
                 r.Location = LocationType.Forest;
                 if (r.Job == JobType.None) r.Job = JobType.Woodcutter;
-                bool logging = r.Knowledge.Contains(KnowledgeType.Logging);
-                // 食料が足りない時、または木材が十分ある時は食料中心、そうでない時は木材中心に採る
-                // 伐採の知識があると木材の収量が上がる（知識が腕になる）
+                // 森林での食料採取（＋木材も少し）。本格的な木材は「伐採」で得る
                 if (_food < AliveCount() * 5 || _wood > AliveCount() * 8)
                 {
                     _food += rng.NextInt(2, 5) + (_tools > 0 ? 1 : 0) + (HasBuilding("倉庫") ? 1 : 0);
-                    _wood += rng.NextInt(0, 2) + (logging ? 1 : 0);
+                    _wood += rng.NextInt(0, 2);
                 }
                 else
                 {
-                    _wood += rng.NextInt(1, 3) + (_tools > 0 ? 1 : 0) + (logging ? 1 : 0);
+                    _wood += rng.NextInt(1, 3) + (_tools > 0 ? 1 : 0);
                     _food += rng.NextInt(0, 2);
                 }
                 // 森林では薬草もたまに採れる（調剤の材料）
@@ -501,38 +502,69 @@ public sealed class Simulation
                 WearTool(rng);
                 break;
 
+            case "伐採":
+                r.Location = LocationType.Forest;
+                r.Job = JobType.Woodcutter;
+                _wood += rng.NextInt(3, 6) + (_tools > 0 ? 1 : 0);
+                if (rng.Chance(0.05)) _herbs++;
+                WearTool(rng);
+                break;
+
             case "採掘":
-                r.Location = LocationType.Cave;
+                r.Location = LocationType.Mine;
                 _ore += rng.NextInt(1, 3) + (_tools > 0 ? 1 : 0);
                 if (rng.Chance(0.03 * InjuryMultiplier()))
                 {
                     r.IsInjured = true;
                     r.Health -= rng.NextInt(8, 22);
-                    AddLog(day, "B", $"{r.Name} が洞窟で怪我をした");
+                    AddLog(day, "B", $"{r.Name} が鉱山で怪我をした");
                 }
                 WearTool(rng);
                 break;
 
             case "探索":
-                r.Location = rng.NextInt(2) == 0 ? LocationType.Forest : LocationType.Cave;
+            {
                 if (r.Job == JobType.None) r.Job = JobType.Explorer;
-                if (rng.Chance(0.05 * InjuryMultiplier()))
+                // 行き先：危険許容度が高いほどダンジョンに行きやすい。
+                // 森林＝低リスク低発見、洞窟＝中リスク、ダンジョン＝高リスク高発見
+                int roll = rng.NextInt(100);
+                LocationType dest;
+                double injuryChance, discoveryMult;
+                string destName;
+                if (roll < 10 + r.Personality.RiskTolerance / 3)
+                {
+                    dest = LocationType.Dungeon; destName = "ダンジョン";
+                    injuryChance = 0.10; discoveryMult = 2.0;
+                }
+                else if (roll < 60)
+                {
+                    dest = LocationType.Cave; destName = "洞窟";
+                    injuryChance = 0.05; discoveryMult = 1.0;
+                }
+                else
+                {
+                    dest = LocationType.Forest; destName = "森林";
+                    injuryChance = 0.02; discoveryMult = 0.5;
+                }
+                r.Location = dest;
+                if (rng.Chance(injuryChance * InjuryMultiplier()))
                 {
                     r.IsInjured = true;
-                    r.Health -= _tools > 0 ? rng.NextInt(8, 20) : rng.NextInt(10, 26);
-                    AddLog(day, "B", $"{r.Name} が探索中に怪我をした");
+                    r.Health -= dest == LocationType.Dungeon ? rng.NextInt(12, 30) : _tools > 0 ? rng.NextInt(8, 20) : rng.NextInt(10, 26);
+                    AddLog(day, "B", $"{r.Name} が{destName}の探索中に怪我をした");
                 }
                 WearTool(rng);
                 var remaining = DiscoveryPool.Where(x => !_discovered.Contains(x)).ToList();
                 // 図書館があると知識が蓄積し、発見が生まれやすくなる
-                if (remaining.Count > 0 && rng.Chance(0.008 * (HasBuilding("図書館") ? 1.5 : 1.0)))
+                if (remaining.Count > 0 && rng.Chance(0.008 * (HasBuilding("図書館") ? 1.5 : 1.0) * discoveryMult))
                 {
                     string found = remaining[rng.NextInt(remaining.Count)];
                     _discovered.Add(found);
                     _development += 10;
-                    AddLog(day, "S", $"{r.Name} が「{found}」を発見した");
+                    AddLog(day, "S", $"{r.Name} が{destName}で「{found}」を発見した");
                 }
                 break;
+            }
 
             case "鍛冶":
                 r.Location = LocationType.Town;
