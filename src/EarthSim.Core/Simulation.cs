@@ -29,6 +29,12 @@ public sealed record SimulationResult
     public required int TotalDeaths { get; init; }
     public required IReadOnlyList<string> DiscoveredItems { get; init; }
     public required int CivilizationLevel { get; init; }
+    public required long FinalWood { get; init; }
+    public required long FinalFood { get; init; }
+    public required long FinalOre { get; init; }
+    public required long FinalTools { get; init; }
+    public required IReadOnlyList<string> BuildingsCompleted { get; init; }
+    public required int ExtraHouses { get; init; }
     public required IReadOnlyList<LogEntry> Log { get; init; }
 
     /// <summary>決定論チェック用：結果とログ全体のハッシュ。</summary>
@@ -41,7 +47,7 @@ public sealed record SimulationResult
 /// </summary>
 public sealed class Simulation
 {
-    public const string SimulationVersion = "0.1.0";
+    public const string SimulationVersion = "0.2.0";
 
     private static readonly string[] DiscoveryPool =
     {
@@ -50,6 +56,18 @@ public sealed class Simulation
     };
 
     private static readonly string[] CivilizationNames = { "木器", "石器", "銅器", "鉄器" };
+
+    /// <summary>建物（この順に建つ）。効果は各処理側で HasBuilding を見て適用する。</summary>
+    private sealed record BuildingDef(string Name, int WoodCost, int OreCost);
+    private static readonly BuildingDef[] BuildingDefs =
+    {
+        new("木の柵", 15, 0),    // 街の守り：発病率が下がる
+        new("住居", 25, 0),      // 出産率と休息の回復が上がる
+        new("倉庫", 30, 0),      // 採取の食料が増える
+        new("鍛冶場", 20, 10),   // 鍛冶の生産が 2 倍になる
+        new("集会所", 35, 0),    // 交流で親密度が育ちやすくなる
+        new("診療所", 30, 0),    // 看病と自然回復が強くなる
+    };
 
     private static readonly string[] Syllables =
     {
@@ -75,6 +93,22 @@ public sealed class Simulation
     private int _totalBirths;
     private int _totalDeaths;
     private int _maxPopulation;
+
+    private readonly List<string> _buildingsCompleted = new();
+    private int _projectProgress;
+    private int _extraHouses;
+
+    private bool HasBuilding(string name) => _buildingsCompleted.Contains(name);
+
+    /// <summary>現在進行中の建築プロジェクト。全て建った後は「住居の増築」が繰り返し出る。</summary>
+    private BuildingDef CurrentProject()
+    {
+        foreach (var def in BuildingDefs)
+        {
+            if (!HasBuilding(def.Name)) return def;
+        }
+        return new BuildingDef("住居の増築", 25, 0);
+    }
 
     public Simulation(SimulationConfig config)
     {
@@ -117,6 +151,12 @@ public sealed class Simulation
             TotalDeaths = _totalDeaths,
             DiscoveredItems = _discovered.ToList(),
             CivilizationLevel = CivilizationLevel(),
+            FinalWood = _wood,
+            FinalFood = _food,
+            FinalOre = _ore,
+            FinalTools = _tools,
+            BuildingsCompleted = _buildingsCompleted.ToList(),
+            ExtraHouses = _extraHouses,
             Log = _log.ToList(),
             ResultHash = "",
         };
@@ -241,13 +281,15 @@ public sealed class Simulation
             if (r.AgeYears >= 70) r.Health -= 0.05 * (r.AgeYears - 69);
 
             // 自然回復：病気・怪我は日数で治ることもある。健康なら少しずつ回復
-            if (r.IsSick && _eventRng.Chance(0.08)) r.IsSick = false;
+            // 診療所があると病気の自然回復が速い
+            if (r.IsSick && _eventRng.Chance(HasBuilding("診療所") ? 0.14 : 0.08)) r.IsSick = false;
             if (r.IsInjured && _eventRng.Chance(0.15)) r.IsInjured = false;
             if (!r.IsSick && !r.IsInjured && r.Hunger < 80)
                 r.Health = Math.Min(100, r.Health + 1.0);
 
-            // 発病：免疫が低いほどかかりやすい
-            if (!r.IsSick && _eventRng.Chance(0.003 * (100 - r.Immunity) / 100.0 + 0.0002))
+            // 発病：免疫が低いほどかかりやすい。木の柵があると街が守られて下がる
+            double sickChance = (0.003 * (100 - r.Immunity) / 100.0 + 0.0002) * (HasBuilding("木の柵") ? 0.7 : 1.0);
+            if (!r.IsSick && _eventRng.Chance(sickChance))
             {
                 r.IsSick = true;
                 AddLog(day, "B", $"{r.Name} が病気になった");
@@ -263,6 +305,9 @@ public sealed class Simulation
                 r.Hunger = Math.Max(0, r.Hunger - 90);
             }
         }
+
+        // 燃料：囲炉裏や鍛冶の燃料として、木材が毎日少しずつ消費される
+        _wood = Math.Max(0, _wood - (AliveCount() + 9) / 10);
 
         // 2〜3. 行動選択と解決（Utility AI）
         var newborns = new List<Resident>();
@@ -280,7 +325,8 @@ public sealed class Simulation
             if (mother.AgeYears is < 18 or > 42) continue;
             var father = _residents.FirstOrDefault(x => x.Id == mother.PartnerId && x.IsAlive);
             if (father is null) continue;
-            double p = 0.0035 * (mother.Fertility / 70.0) * (father.Fertility / 70.0);
+            double p = 0.0035 * (mother.Fertility / 70.0) * (father.Fertility / 70.0)
+                       * (HasBuilding("住居") ? 1.3 : 1.0);
             if (!_eventRng.Chance(p)) continue;
 
             var child = CreateResident(ageDays: 0, father: father, mother: mother);
@@ -332,10 +378,20 @@ public sealed class Simulation
         if (adult)
         {
             scores.Add(("採取", p.Planning * 0.4 + p.Greed * 0.4 + (_food < AliveCount() * 3 ? 25 : 0) + 10));
-            scores.Add(("採掘", p.Curiosity * 0.3 + p.RiskTolerance * 0.4 + p.Greed * 0.3 + 5));
+            // 採掘：鉱石が十分ある時は掘らない（掘りすぎ防止）
+            if (_ore < AliveCount() * 3 + 20)
+                scores.Add(("採掘", p.Curiosity * 0.3 + p.RiskTolerance * 0.4 + p.Greed * 0.3 + 5));
             scores.Add(("探索", p.Curiosity * 0.8 + p.RiskTolerance * 0.5 - (100 - r.Health) * 0.3));
             scores.Add(("交流", p.Sociability * 0.6 + p.Empathy * 0.3 + (r.PartnerId is null ? 20 : 0) + 5));
-            if (_ore > 0) scores.Add(("鍛冶", p.Planning * 0.5 + p.Cooperativeness * 0.3 + p.Greed * 0.2 + 5));
+            // 鍛冶：道具が人口分より少ない時だけ（作りすぎ防止）
+            if (_ore > 0 && _tools < AliveCount()) scores.Add(("鍛冶", p.Planning * 0.5 + p.Cooperativeness * 0.3 + p.Greed * 0.2 + 5));
+            // 建築：木材があり、プロジェクトが鉱石待ちで止まっていない時だけ。
+            // 増築は「住む人が増えた時」だけ必要になる
+            var project = CurrentProject();
+            bool waitingForOre = _projectProgress >= project.WoodCost && _ore < project.OreCost;
+            bool extraHouseNeeded = project.Name != "住居の増築" || AliveCount() > 20 + _extraHouses * 5;
+            if (_wood > 0 && !waitingForOre && extraHouseNeeded)
+                scores.Add(("建築", p.Planning * 0.5 + p.Cooperativeness * 0.3 + p.Obsession * 0.2 + 8));
             if (anyoneSick) scores.Add(("看病", p.Empathy * 0.6 + p.Planning * 0.2 + 10));
         }
 
@@ -364,30 +420,42 @@ public sealed class Simulation
             case "採取":
                 r.Location = LocationType.Forest;
                 if (r.Job == JobType.None) r.Job = JobType.Woodcutter;
-                _wood += rng.NextInt(1, 4);
-                _food += rng.NextInt(1, 4);
+                // 食料が足りない時は食料中心、足りている時は木材中心に採る
+                if (_food < AliveCount() * 5)
+                {
+                    _food += rng.NextInt(2, 5) + (_tools > 0 ? 1 : 0) + (HasBuilding("倉庫") ? 1 : 0);
+                    _wood += rng.NextInt(0, 2);
+                }
+                else
+                {
+                    _wood += rng.NextInt(1, 3) + (_tools > 0 ? 1 : 0);
+                    _food += rng.NextInt(0, 2);
+                }
+                WearTool(rng);
                 break;
 
             case "採掘":
                 r.Location = LocationType.Cave;
-                _ore += rng.NextInt(1, 3);
-                if (rng.Chance(0.03))
+                _ore += rng.NextInt(1, 3) + (_tools > 0 ? 1 : 0);
+                if (rng.Chance(0.03 * InjuryMultiplier()))
                 {
                     r.IsInjured = true;
                     r.Health -= rng.NextInt(8, 22);
                     AddLog(day, "B", $"{r.Name} が洞窟で怪我をした");
                 }
+                WearTool(rng);
                 break;
 
             case "探索":
                 r.Location = rng.NextInt(2) == 0 ? LocationType.Forest : LocationType.Cave;
                 if (r.Job == JobType.None) r.Job = JobType.Explorer;
-                if (rng.Chance(0.05))
+                if (rng.Chance(0.05 * InjuryMultiplier()))
                 {
                     r.IsInjured = true;
-                    r.Health -= rng.NextInt(10, 26);
+                    r.Health -= _tools > 0 ? rng.NextInt(8, 20) : rng.NextInt(10, 26);
                     AddLog(day, "B", $"{r.Name} が探索中に怪我をした");
                 }
+                WearTool(rng);
                 var remaining = DiscoveryPool.Where(x => !_discovered.Contains(x)).ToList();
                 if (remaining.Count > 0 && rng.Chance(0.008))
                 {
@@ -403,9 +471,42 @@ public sealed class Simulation
                 r.Job = JobType.Blacksmith;
                 if (_ore > 0 && _wood > 0)
                 {
-                    _ore--; _wood--; _tools++; _development += 2;
+                    _ore--; _wood--;
+                    // 鍛冶場があると 1 回で 2 個作れて発展度も大きい
+                    _tools += HasBuilding("鍛冶場") ? 2 : 1;
+                    _development += HasBuilding("鍛冶場") ? 4 : 2;
                 }
                 break;
+
+            case "建築":
+            {
+                r.Location = LocationType.Town;
+                r.Job = JobType.Carpenter;
+                var project = CurrentProject();
+                int invest = Math.Min(5, Math.Min(project.WoodCost - _projectProgress, (int)Math.Min(5, _wood)));
+                if (invest > 0)
+                {
+                    _wood -= invest;
+                    _projectProgress += invest;
+                }
+                if (_projectProgress >= project.WoodCost && _ore >= project.OreCost)
+                {
+                    _ore -= project.OreCost;
+                    _projectProgress = 0;
+                    _development += 5;
+                    if (project.Name == "住居の増築")
+                    {
+                        _extraHouses++;
+                        AddLog(day, "A", $"住居が増築された（{r.Name} ら大工の仕事、増築 {_extraHouses} 棟目）");
+                    }
+                    else
+                    {
+                        _buildingsCompleted.Add(project.Name);
+                        AddLog(day, "A", $"「{project.Name}」が完成した（{r.Name} ら大工の仕事）");
+                    }
+                }
+                break;
+            }
 
             case "交流":
             {
@@ -419,6 +520,7 @@ public sealed class Simulation
                     ? closest
                     : others[rng.NextInt(others.Count)];
                 int gain = rng.NextInt(6, 15);
+                if (HasBuilding("集会所")) gain = (int)(gain * 1.5);
                 r.Affinity[other.Id] = r.Affinity.GetValueOrDefault(other.Id) + gain;
                 other.Affinity[r.Id] = other.Affinity.GetValueOrDefault(r.Id) + gain;
 
@@ -439,9 +541,10 @@ public sealed class Simulation
                                       .OrderBy(x => x.Id).FirstOrDefault();
                 if (target is not null)
                 {
-                    target.Health = Math.Min(100, target.Health + 8);
-                    if (target.IsSick && rng.Chance(0.3)) target.IsSick = false;
-                    if (target.IsInjured && rng.Chance(0.4)) target.IsInjured = false;
+                    bool clinic = HasBuilding("診療所");
+                    target.Health = Math.Min(100, target.Health + (clinic ? 14 : 8));
+                    if (target.IsSick && rng.Chance(clinic ? 0.5 : 0.3)) target.IsSick = false;
+                    if (target.IsInjured && rng.Chance(clinic ? 0.6 : 0.4)) target.IsInjured = false;
                 }
                 break;
             }
@@ -452,9 +555,9 @@ public sealed class Simulation
 
             case "休息":
                 r.Location = LocationType.Town;
-                r.Stamina = Math.Min(100, r.Stamina + 30);
+                r.Stamina = Math.Min(100, r.Stamina + 30 + Math.Min(10, _extraHouses * 2));
                 r.Fatigue = Math.Max(0, r.Fatigue - 40);
-                r.Health = Math.Min(100, r.Health + 1.5);
+                r.Health = Math.Min(100, r.Health + 1.5 + (HasBuilding("住居") ? 1.0 : 0));
                 break;
 
             default: // 様子見
@@ -464,6 +567,15 @@ public sealed class Simulation
     }
 
     // ---------- 補助 ----------
+
+    /// <summary>道具（装備）の在庫が多いほど、採掘・探索の怪我率が下がる。</summary>
+    private double InjuryMultiplier() => _tools >= 10 ? 0.5 : _tools > 0 ? 0.75 : 1.0;
+
+    /// <summary>道具は作業でたまに壊れる（鍛冶の需要が続くように）。</summary>
+    private void WearTool(DeterministicRandom rng)
+    {
+        if (_tools > 0 && rng.Chance(0.03)) _tools--;
+    }
 
     private List<Resident> Alive() => _residents.Where(r => r.IsAlive).OrderBy(r => r.Id).ToList();
     private int AliveCount() => _residents.Count(r => r.IsAlive);
@@ -487,7 +599,10 @@ public sealed class Simulation
           .Append(result.TotalBirths).Append('|')
           .Append(result.TotalDeaths).Append('|')
           .Append(string.Join(",", result.DiscoveredItems)).Append('|')
-          .Append(result.CivilizationLevel);
+          .Append(result.CivilizationLevel).Append('|')
+          .Append(string.Join(",", result.BuildingsCompleted)).Append('|')
+          .Append(result.ExtraHouses).Append('|')
+          .Append(result.FinalTools);
         foreach (var e in result.Log) sb.Append('\n').Append(e.Day).Append(':').Append(e.Level).Append(':').Append(e.Text);
 
         ulong hash = 14695981039346656037UL;

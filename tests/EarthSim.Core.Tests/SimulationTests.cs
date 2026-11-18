@@ -31,6 +31,13 @@ public class SimulationTests
     }
 
     [Fact]
+    public void Buildings_GetBuiltOverTime()
+    {
+        var r = new Simulation(Config("test-seed-1")).Run();
+        Assert.NotEmpty(r.BuildingsCompleted);
+    }
+
+    [Fact]
     public void Result_IsInternallyConsistent()
     {
         var r = new Simulation(Config("test-seed-3")).Run();

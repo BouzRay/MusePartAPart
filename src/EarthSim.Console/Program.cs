@@ -37,6 +37,8 @@ Console.WriteLine($"最大人口 : {result.MaxPopulation} 人 / 最終人口: {r
 Console.WriteLine($"出生総数 : {result.TotalBirths} / 死亡総数: {result.TotalDeaths}");
 Console.WriteLine($"発見     : {(result.DiscoveredItems.Count == 0 ? "なし" : string.Join("、", result.DiscoveredItems))}");
 Console.WriteLine($"文明     : {Simulation.CivilizationName(result.CivilizationLevel)}（Lv.{result.CivilizationLevel}）");
+Console.WriteLine($"建物     : {(result.BuildingsCompleted.Count == 0 ? "なし" : string.Join("、", result.BuildingsCompleted))}（住居の増築 {result.ExtraHouses} 棟）");
+Console.WriteLine($"最終資源 : 木材 {result.FinalWood} / 食料 {result.FinalFood} / 鉱石 {result.FinalOre} / 道具 {result.FinalTools}");
 Console.WriteLine($"結果ハッシュ: {result.ResultHash}");
 
 // 決定論チェック：同じ Seed で回し直して、結果が完全一致するか

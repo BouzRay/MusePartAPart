@@ -23,7 +23,7 @@ public sealed class Personality
 
 public enum Sex { Male, Female }
 
-public enum JobType { None, Woodcutter, Blacksmith, Explorer }
+public enum JobType { None, Woodcutter, Blacksmith, Explorer, Carpenter }
 
 public enum LocationType { Town, Forest, Cave }
 
