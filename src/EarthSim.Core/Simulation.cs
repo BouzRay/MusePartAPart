@@ -47,7 +47,7 @@ public sealed record SimulationResult
 /// </summary>
 public sealed class Simulation
 {
-    public const string SimulationVersion = "0.2.0";
+    public const string SimulationVersion = "0.3.0";
 
     private static readonly string[] DiscoveryPool =
     {
@@ -67,6 +67,7 @@ public sealed class Simulation
         new("鍛冶場", 20, 10),   // 鍛冶の生産が 2 倍になる
         new("集会所", 35, 0),    // 交流で親密度が育ちやすくなる
         new("診療所", 30, 0),    // 看病と自然回復が強くなる
+        new("図書館", 40, 0),    // 知識の蓄積：発見確率が上がる（本の仕組みの土台）
     };
 
     private static readonly string[] Syllables =
@@ -457,7 +458,8 @@ public sealed class Simulation
                 }
                 WearTool(rng);
                 var remaining = DiscoveryPool.Where(x => !_discovered.Contains(x)).ToList();
-                if (remaining.Count > 0 && rng.Chance(0.008))
+                // 図書館があると知識が蓄積し、発見が生まれやすくなる
+                if (remaining.Count > 0 && rng.Chance(0.008 * (HasBuilding("図書館") ? 1.5 : 1.0)))
                 {
                     string found = remaining[rng.NextInt(remaining.Count)];
                     _discovered.Add(found);
