@@ -23,9 +23,12 @@ public sealed class Personality
 
 public enum Sex { Male, Female }
 
-public enum JobType { None, Woodcutter, Blacksmith, Explorer, Carpenter }
+public enum JobType { None, Woodcutter, Blacksmith, Explorer, Carpenter, Pharmacist }
 
 public enum LocationType { Town, Forest, Cave }
+
+/// <summary>図書館の本から得る知識。住人は最初は全て持っていない（知識の基本原則）。</summary>
+public enum KnowledgeType { Blacksmithing, Mining, Logging, Carpentry, Pharmacy }
 
 /// <summary>住人 1 人。HP/MP ではなく身体・性格・状態で管理する（仕様 v0）。</summary>
 public sealed class Resident
@@ -66,6 +69,12 @@ public sealed class Resident
 
     /// <summary>交流で育つ関係値。相手 Id → 親密度（決定的に Id 順で処理する）。</summary>
     public Dictionary<int, int> Affinity { get; } = new();
+
+    /// <summary>習得済みの知識（図書館の本で学ぶ）。生まれた時は空。</summary>
+    public HashSet<KnowledgeType> Knowledge { get; } = new();
+
+    /// <summary>学習中の知識 → 進捗（100 で習得）。</summary>
+    public Dictionary<KnowledgeType, int> StudyProgress { get; } = new();
 
     public bool IsAlive { get; set; } = true;
     public int? DeathDay { get; set; }

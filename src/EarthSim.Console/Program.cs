@@ -39,6 +39,7 @@ Console.WriteLine($"発見     : {(result.DiscoveredItems.Count == 0 ? "なし" 
 Console.WriteLine($"文明     : {Simulation.CivilizationName(result.CivilizationLevel)}（Lv.{result.CivilizationLevel}）");
 Console.WriteLine($"建物     : {(result.BuildingsCompleted.Count == 0 ? "なし" : string.Join("、", result.BuildingsCompleted))}（住居の増築 {result.ExtraHouses} 棟）");
 Console.WriteLine($"最終資源 : 木材 {result.FinalWood} / 食料 {result.FinalFood} / 鉱石 {result.FinalOre} / 道具 {result.FinalTools}");
+Console.WriteLine($"知識保有 : {string.Join(" / ", result.KnowledgeHolders.Select(kv => $"{kv.Key} {kv.Value} 人"))}（薬草 {result.FinalHerbs} / 薬 {result.FinalMedicine}）");
 Console.WriteLine($"結果ハッシュ: {result.ResultHash}");
 
 // 決定論チェック：同じ Seed で回し直して、結果が完全一致するか

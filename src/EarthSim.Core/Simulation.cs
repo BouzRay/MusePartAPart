@@ -33,6 +33,10 @@ public sealed record SimulationResult
     public required long FinalFood { get; init; }
     public required long FinalOre { get; init; }
     public required long FinalTools { get; init; }
+    public required long FinalHerbs { get; init; }
+    public required long FinalMedicine { get; init; }
+    /// <summary>知識ごとの保有者数（生存者）。知識名 → 人数。</summary>
+    public required IReadOnlyDictionary<string, int> KnowledgeHolders { get; init; }
     public required IReadOnlyList<string> BuildingsCompleted { get; init; }
     public required int ExtraHouses { get; init; }
     public required IReadOnlyList<LogEntry> Log { get; init; }
@@ -47,7 +51,7 @@ public sealed record SimulationResult
 /// </summary>
 public sealed class Simulation
 {
-    public const string SimulationVersion = "0.3.0";
+    public const string SimulationVersion = "0.4.0";
 
     private static readonly string[] DiscoveryPool =
     {
@@ -57,18 +61,55 @@ public sealed class Simulation
 
     private static readonly string[] CivilizationNames = { "木器", "石器", "銅器", "鉄器" };
 
-    /// <summary>建物（この順に建つ）。効果は各処理側で HasBuilding を見て適用する。</summary>
+    /// <summary>
+    /// 建物（この順に建つ）。効果は各処理側で HasBuilding を見て適用する。
+    /// 図書館は 3 番目：知識で行動が制限される仕組みの起点になるため早めに建つ。
+    /// 木の柵・住居・図書館までは知識なしで建てられ、それ以降の建築には大工の知識が要る。
+    /// </summary>
     private sealed record BuildingDef(string Name, int WoodCost, int OreCost);
     private static readonly BuildingDef[] BuildingDefs =
     {
         new("木の柵", 15, 0),    // 街の守り：発病率が下がる
         new("住居", 25, 0),      // 出産率と休息の回復が上がる
+        new("図書館", 40, 0),    // 知識の蓄積：本で学べるようになり、発見確率も上がる
         new("倉庫", 30, 0),      // 採取の食料が増える
         new("鍛冶場", 20, 10),   // 鍛冶の生産が 2 倍になる
         new("集会所", 35, 0),    // 交流で親密度が育ちやすくなる
         new("診療所", 30, 0),    // 看病と自然回復が強くなる
-        new("図書館", 40, 0),    // 知識の蓄積：発見確率が上がる（本の仕組みの土台）
     };
+
+    /// <summary>知識なしで建てられる建物（図書館までが知識社会の起点）。</summary>
+    private static readonly string[] NoKnowledgeBuildings = { "木の柵", "住居", "図書館" };
+
+    /// <summary>図書館の蔵書（知識の種類すべて）。住人は本で学んで知識を得る。</summary>
+    private static readonly KnowledgeType[] AllKnowledge = Enum.GetValues<KnowledgeType>();
+
+    private static string KnowledgeName(KnowledgeType k) => k switch
+    {
+        KnowledgeType.Blacksmithing => "鍛冶",
+        KnowledgeType.Mining => "採掘",
+        KnowledgeType.Logging => "伐採",
+        KnowledgeType.Carpentry => "大工",
+        KnowledgeType.Pharmacy => "調剤",
+        _ => k.ToString(),
+    };
+
+    private static string BookName(KnowledgeType k) => $"{KnowledgeName(k)}の本";
+
+    /// <summary>どの知識に向いているか（性格による適性）。学ぶ本の選択に使う。</summary>
+    private static double KnowledgeAptitude(Resident r, KnowledgeType k)
+    {
+        var p = r.Personality;
+        return k switch
+        {
+            KnowledgeType.Blacksmithing => p.Planning * 0.5 + p.Obsession * 0.3 + p.Intuition * 0.2,
+            KnowledgeType.Mining => p.RiskTolerance * 0.5 + p.Curiosity * 0.3 + p.Greed * 0.2,
+            KnowledgeType.Logging => p.Cooperativeness * 0.3 + p.Planning * 0.3 + p.Obsession * 0.2 + 10,
+            KnowledgeType.Carpentry => p.Planning * 0.5 + p.Cooperativeness * 0.3 + p.Obsession * 0.2,
+            KnowledgeType.Pharmacy => p.Empathy * 0.5 + p.Planning * 0.3 + p.Intuition * 0.2,
+            _ => 0,
+        };
+    }
 
     private static readonly string[] Syllables =
     {
@@ -89,6 +130,8 @@ public sealed class Simulation
     private long _food;
     private long _ore;
     private long _tools;
+    private long _herbs;
+    private long _medicine;
     private long _development;
 
     private int _totalBirths;
@@ -156,6 +199,11 @@ public sealed class Simulation
             FinalFood = _food,
             FinalOre = _ore,
             FinalTools = _tools,
+            FinalHerbs = _herbs,
+            FinalMedicine = _medicine,
+            KnowledgeHolders = AllKnowledge.ToDictionary(
+                k => KnowledgeName(k),
+                k => _residents.Count(x => x.IsAlive && x.Knowledge.Contains(k))),
             BuildingsCompleted = _buildingsCompleted.ToList(),
             ExtraHouses = _extraHouses,
             Log = _log.ToList(),
@@ -379,21 +427,35 @@ public sealed class Simulation
         if (adult)
         {
             scores.Add(("採取", p.Planning * 0.4 + p.Greed * 0.4 + (_food < AliveCount() * 3 ? 25 : 0) + 10));
-            // 採掘：鉱石が十分ある時は掘らない（掘りすぎ防止）
-            if (_ore < AliveCount() * 3 + 20)
+            // 採掘：採掘の知識が要る。鉱石が十分ある時は掘らない（掘りすぎ防止）
+            if (r.Knowledge.Contains(KnowledgeType.Mining) && _ore < AliveCount() * 3 + 20)
                 scores.Add(("採掘", p.Curiosity * 0.3 + p.RiskTolerance * 0.4 + p.Greed * 0.3 + 5));
             scores.Add(("探索", p.Curiosity * 0.8 + p.RiskTolerance * 0.5 - (100 - r.Health) * 0.3));
             scores.Add(("交流", p.Sociability * 0.6 + p.Empathy * 0.3 + (r.PartnerId is null ? 20 : 0) + 5));
-            // 鍛冶：道具が人口分より少ない時だけ（作りすぎ防止）
-            if (_ore > 0 && _tools < AliveCount()) scores.Add(("鍛冶", p.Planning * 0.5 + p.Cooperativeness * 0.3 + p.Greed * 0.2 + 5));
+            // 鍛冶：鍛冶の知識が要る。道具が人口分より少ない時だけ（作りすぎ防止）
+            if (r.Knowledge.Contains(KnowledgeType.Blacksmithing) && _ore > 0 && _tools < AliveCount()) scores.Add(("鍛冶", p.Planning * 0.5 + p.Cooperativeness * 0.3 + p.Greed * 0.2 + 5));
+            // 調剤：調剤の知識が要る。薬草から薬を作る（作りすぎ防止つき）
+            if (r.Knowledge.Contains(KnowledgeType.Pharmacy) && _herbs >= 2 && _medicine < AliveCount()) scores.Add(("調剤", p.Empathy * 0.5 + p.Planning * 0.3 + 10));
             // 建築：木材があり、プロジェクトが鉱石待ちで止まっていない時だけ。
-            // 増築は「住む人が増えた時」だけ必要になる
+            // 増築は「住む人が増えた時」だけ必要になる。
+            // 図書館より後の建物と増築には大工の知識が要る
             var project = CurrentProject();
             bool waitingForOre = _projectProgress >= project.WoodCost && _ore < project.OreCost;
             bool extraHouseNeeded = project.Name != "住居の増築" || AliveCount() > 20 + _extraHouses * 5;
-            if (_wood > 0 && !waitingForOre && extraHouseNeeded)
+            bool carpentryOk = NoKnowledgeBuildings.Contains(project.Name) || r.Knowledge.Contains(KnowledgeType.Carpentry);
+            if (_wood > 0 && !waitingForOre && extraHouseNeeded && carpentryOk)
                 scores.Add(("建築", p.Planning * 0.5 + p.Cooperativeness * 0.3 + p.Obsession * 0.2 + 8));
             if (anyoneSick) scores.Add(("看病", p.Empathy * 0.6 + p.Planning * 0.2 + 10));
+        }
+        // 学ぶ：図書館があり、適性のある未習得の知識がある時（12 歳から）。
+        // 適性ゲートと「知識が増えるほど次を学びにくくなる」ことで、住人が分業・専門化する
+        if (HasBuilding("図書館") && r.AgeYears >= 12 && r.Knowledge.Count < AllKnowledge.Length)
+        {
+            double bestAptitude = AllKnowledge.Where(k => !r.Knowledge.Contains(k))
+                                              .Select(k => KnowledgeAptitude(r, k))
+                                              .DefaultIfEmpty(0).Max();
+            if (bestAptitude >= 45)
+                scores.Add(("学ぶ", (p.Curiosity * 0.5 + p.Planning * 0.3 + p.Intuition * 0.2 + 15) * (1.0 - 0.15 * r.Knowledge.Count)));
         }
 
         string best = "休息";
@@ -421,17 +483,21 @@ public sealed class Simulation
             case "採取":
                 r.Location = LocationType.Forest;
                 if (r.Job == JobType.None) r.Job = JobType.Woodcutter;
-                // 食料が足りない時は食料中心、足りている時は木材中心に採る
-                if (_food < AliveCount() * 5)
+                bool logging = r.Knowledge.Contains(KnowledgeType.Logging);
+                // 食料が足りない時、または木材が十分ある時は食料中心、そうでない時は木材中心に採る
+                // 伐採の知識があると木材の収量が上がる（知識が腕になる）
+                if (_food < AliveCount() * 5 || _wood > AliveCount() * 8)
                 {
                     _food += rng.NextInt(2, 5) + (_tools > 0 ? 1 : 0) + (HasBuilding("倉庫") ? 1 : 0);
-                    _wood += rng.NextInt(0, 2);
+                    _wood += rng.NextInt(0, 2) + (logging ? 1 : 0);
                 }
                 else
                 {
-                    _wood += rng.NextInt(1, 3) + (_tools > 0 ? 1 : 0);
+                    _wood += rng.NextInt(1, 3) + (_tools > 0 ? 1 : 0) + (logging ? 1 : 0);
                     _food += rng.NextInt(0, 2);
                 }
+                // 森林では薬草もたまに採れる（調剤の材料）
+                if (rng.Chance(0.05)) _herbs++;
                 WearTool(rng);
                 break;
 
@@ -510,6 +576,44 @@ public sealed class Simulation
                 break;
             }
 
+            case "学ぶ":
+            {
+                r.Location = LocationType.Town;
+                // まだ知らない知識のうち、適性が一番高い本を読む
+                var target = AllKnowledge.Where(k => !r.Knowledge.Contains(k))
+                                         .OrderByDescending(k => KnowledgeAptitude(r, k))
+                                         .ThenBy(k => (int)k)
+                                         .Cast<KnowledgeType?>()
+                                         .FirstOrDefault();
+                if (target is KnowledgeType tk)
+                {
+                    int gain = rng.NextInt(8, 18) + r.Personality.Curiosity / 10;
+                    int progress = r.StudyProgress.GetValueOrDefault(tk) + gain;
+                    if (progress >= 100)
+                    {
+                        r.Knowledge.Add(tk);
+                        r.StudyProgress.Remove(tk);
+                        AddLog(day, "B", $"{r.Name} は『{BookName(tk)}』を読み終え、{KnowledgeName(tk)}の知識を身につけた");
+                    }
+                    else
+                    {
+                        r.StudyProgress[tk] = progress;
+                    }
+                }
+                break;
+            }
+
+            case "調剤":
+                r.Location = LocationType.Town;
+                r.Job = JobType.Pharmacist;
+                if (_herbs >= 2)
+                {
+                    _herbs -= 2;
+                    _medicine++;
+                    _development += 1;
+                }
+                break;
+
             case "交流":
             {
                 r.Location = LocationType.Town;
@@ -544,9 +648,12 @@ public sealed class Simulation
                 if (target is not null)
                 {
                     bool clinic = HasBuilding("診療所");
-                    target.Health = Math.Min(100, target.Health + (clinic ? 14 : 8));
-                    if (target.IsSick && rng.Chance(clinic ? 0.5 : 0.3)) target.IsSick = false;
-                    if (target.IsInjured && rng.Chance(clinic ? 0.6 : 0.4)) target.IsInjured = false;
+                    // 薬がある時は薬を使う（調剤の知識が街を救う）
+                    bool useMedicine = _medicine > 0;
+                    if (useMedicine) _medicine--;
+                    target.Health = Math.Min(100, target.Health + (useMedicine ? 20 : clinic ? 14 : 8));
+                    if (target.IsSick && rng.Chance(useMedicine ? 0.7 : clinic ? 0.5 : 0.3)) target.IsSick = false;
+                    if (target.IsInjured && rng.Chance(useMedicine ? 0.7 : clinic ? 0.6 : 0.4)) target.IsInjured = false;
                 }
                 break;
             }
@@ -604,7 +711,9 @@ public sealed class Simulation
           .Append(result.CivilizationLevel).Append('|')
           .Append(string.Join(",", result.BuildingsCompleted)).Append('|')
           .Append(result.ExtraHouses).Append('|')
-          .Append(result.FinalTools);
+          .Append(result.FinalTools).Append('|')
+          .Append(result.FinalMedicine).Append('|')
+          .Append(string.Join(",", result.KnowledgeHolders.Values));
         foreach (var e in result.Log) sb.Append('\n').Append(e.Day).Append(':').Append(e.Level).Append(':').Append(e.Text);
 
         ulong hash = 14695981039346656037UL;

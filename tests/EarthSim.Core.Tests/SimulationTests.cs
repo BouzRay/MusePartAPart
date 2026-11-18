@@ -38,6 +38,15 @@ public class SimulationTests
     }
 
     [Fact]
+    public void Knowledge_IsLearnedFromBooks()
+    {
+        var r = new Simulation(Config("test-seed-1")).Run();
+        // 図書館が建ち、誰かが本で知識を身につけていること
+        Assert.Contains("図書館", r.BuildingsCompleted);
+        Assert.True(r.KnowledgeHolders.Values.Sum() > 0);
+    }
+
+    [Fact]
     public void Result_IsInternallyConsistent()
     {
         var r = new Simulation(Config("test-seed-3")).Run();
