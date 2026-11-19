@@ -32,7 +32,11 @@ public sealed record SimulationResult
     public required long FinalWood { get; init; }
     public required long FinalFood { get; init; }
     public required long FinalOre { get; init; }
-    public required long FinalTools { get; init; }
+    public required long FinalAxeStock { get; init; }
+    public required long FinalPickaxeStock { get; init; }
+    /// <summary>斧・つるはしを持っている生存者の数。</summary>
+    public required int AxeHolders { get; init; }
+    public required int PickaxeHolders { get; init; }
     public required long FinalHerbs { get; init; }
     public required long FinalMedicine { get; init; }
     /// <summary>知識ごとの保有者数（生存者）。知識名 → 人数。</summary>
@@ -51,7 +55,7 @@ public sealed record SimulationResult
 /// </summary>
 public sealed class Simulation
 {
-    public const string SimulationVersion = "0.6.0";
+    public const string SimulationVersion = "0.7.0";
 
     private static readonly string[] DiscoveryPool =
     {
@@ -147,7 +151,8 @@ public sealed class Simulation
     private long _wood;
     private long _food;
     private long _ore;
-    private long _tools;
+    private long _axeStock;       // 街の斧の在庫（鍛冶で作られ、持っていない住人が受け取る）
+    private long _pickaxeStock;   // 街のつるはしの在庫
     private long _herbs;
     private long _medicine;
     private long _development;
@@ -216,7 +221,10 @@ public sealed class Simulation
             FinalWood = _wood,
             FinalFood = _food,
             FinalOre = _ore,
-            FinalTools = _tools,
+            FinalAxeStock = _axeStock,
+            FinalPickaxeStock = _pickaxeStock,
+            AxeHolders = _residents.Count(x => x.IsAlive && x.HasAxe),
+            PickaxeHolders = _residents.Count(x => x.IsAlive && x.HasPickaxe),
             FinalHerbs = _herbs,
             FinalMedicine = _medicine,
             KnowledgeHolders = AllKnowledge.ToDictionary(
@@ -236,7 +244,11 @@ public sealed class Simulation
     {
         for (int i = 0; i < _config.InitialPopulation; i++)
         {
-            _residents.Add(CreateResident(ageDays: GenerateInitialAgeDays()));
+            var resident = CreateResident(ageDays: GenerateInitialAgeDays());
+            // 初期住人には斧とつるはしを 1 本ずつ配布する
+            resident.HasAxe = true;
+            resident.HasPickaxe = true;
+            _residents.Add(resident);
         }
     }
 
@@ -337,6 +349,13 @@ public sealed class Simulation
 
     private void StepDay(int day)
     {
+        // 0. 道具の配布：持っていない住人は朝に街の在庫から斧とつるはしを受け取る
+        foreach (var r in Alive())
+        {
+            EnsureAxe(r);
+            EnsurePickaxe(r);
+        }
+
         // 1. 健康・老化
         foreach (var r in Alive())
         {
@@ -454,7 +473,10 @@ public sealed class Simulation
             scores.Add(("探索", p.Curiosity * 0.8 + p.RiskTolerance * 0.5 - (100 - r.Health) * 0.3));
             scores.Add(("交流", p.Sociability * 0.6 + p.Empathy * 0.3 + (r.PartnerId is null ? 20 : 0) + 5));
             // 鍛冶：鍛冶の知識が要る。道具が人口分より少ない時だけ（作りすぎ防止）
-            if (r.Knowledge.Contains(KnowledgeType.Blacksmithing) && _ore > 0 && _tools < AliveCount()) scores.Add(("鍛冶", p.Planning * 0.5 + p.Cooperativeness * 0.3 + p.Greed * 0.2 + 5));
+            // 鍛冶：斧か つるはしが「持っている人＋在庫」で人口に足りない間だけ作る（過剰生産の抑制）
+            int axeTotal = (int)_axeStock + Alive().Count(x => x.HasAxe);
+            int pickaxeTotal = (int)_pickaxeStock + Alive().Count(x => x.HasPickaxe);
+            if (r.Knowledge.Contains(KnowledgeType.Blacksmithing) && _ore > 0 && (axeTotal < AliveCount() || pickaxeTotal < AliveCount())) scores.Add(("鍛冶", p.Planning * 0.5 + p.Cooperativeness * 0.3 + p.Greed * 0.2 + 5));
             // 調剤：調剤の知識が要る。薬草から薬を作る（作りすぎ防止つき）
             if (r.Knowledge.Contains(KnowledgeType.Pharmacy) && _herbs >= 2 && _medicine < AliveCount()) scores.Add(("調剤", p.Empathy * 0.5 + p.Planning * 0.3 + 10));
             // 建築：木材があり、プロジェクトが鉱石待ちで止まっていない時だけ。
@@ -505,40 +527,42 @@ public sealed class Simulation
             case "採取":
                 r.Location = LocationType.Forest;
                 if (r.Job == JobType.None) r.Job = JobType.Woodcutter;
-                // 森林での食料採取（＋木材も少し）。本格的な木材は「伐採」で得る
+                // 森林での食料採取（＋木材も少し）。素手の作業で道具は使わない。
+                // 本格的な木材は斧を使う「伐採」で得る
                 if (_food < AliveCount() * 5 || _wood > AliveCount() * 8)
                 {
-                    _food += rng.NextInt(2, 5) + (_tools > 0 ? 1 : 0) + (HasBuilding("倉庫") ? 1 : 0);
+                    _food += rng.NextInt(2, 5) + (HasBuilding("倉庫") ? 1 : 0);
                     _wood += rng.NextInt(0, 2);
                 }
                 else
                 {
-                    _wood += rng.NextInt(1, 3) + (_tools > 0 ? 1 : 0);
+                    _wood += rng.NextInt(1, 3);
                     _food += rng.NextInt(0, 2);
                 }
                 // 森林では薬草もたまに採れる（調剤の材料）
                 if (rng.Chance(0.05)) _herbs++;
-                WearTool(rng);
                 break;
 
             case "伐採":
                 r.Location = LocationType.Forest;
                 r.Job = JobType.Woodcutter;
-                _wood += rng.NextInt(3, 6) + (_tools > 0 ? 1 : 0) + (HasBuilding("木工房") ? 1 : 0);
+                EnsureAxe(r);   // 持っていなければ在庫から受け取る
+                _wood += rng.NextInt(3, 6) + (r.HasAxe ? 1 : 0) + (HasBuilding("木工房") ? 1 : 0);
                 if (rng.Chance(0.05)) _herbs++;
-                WearTool(rng);
+                WearAxe(r, rng);
                 break;
 
             case "採掘":
                 r.Location = LocationType.Mine;
-                _ore += rng.NextInt(1, 3) + (_tools > 0 ? 1 : 0);
-                if (rng.Chance(0.03 * InjuryMultiplier()))
+                EnsurePickaxe(r);   // 持っていなければ在庫から受け取る
+                _ore += rng.NextInt(1, 3) + (r.HasPickaxe ? 1 : 0);
+                if (rng.Chance(0.03 * InjuryMultiplier(r)))
                 {
                     r.IsInjured = true;
                     r.Health -= rng.NextInt(8, 22);
                     AddLog(day, "B", $"{r.Name} が鉱山で怪我をした");
                 }
-                WearTool(rng);
+                WearPickaxe(r, rng);
                 break;
 
             case "探索":
@@ -566,13 +590,15 @@ public sealed class Simulation
                     injuryChance = 0.02; discoveryMult = 0.5;
                 }
                 r.Location = dest;
-                if (rng.Chance(injuryChance * InjuryMultiplier()))
+                if (rng.Chance(injuryChance * InjuryMultiplier(r)))
                 {
                     r.IsInjured = true;
-                    r.Health -= dest == LocationType.Dungeon ? rng.NextInt(12, 30) : _tools > 0 ? rng.NextInt(8, 20) : rng.NextInt(10, 26);
+                    bool equipped = r.HasAxe || r.HasPickaxe;
+                    r.Health -= dest == LocationType.Dungeon ? rng.NextInt(12, 30) : equipped ? rng.NextInt(8, 20) : rng.NextInt(10, 26);
                     AddLog(day, "B", $"{r.Name} が{destName}の探索中に怪我をした");
                 }
-                WearTool(rng);
+                // 探索ではつるはし優先で摩耗する（無ければ斧）
+                if (r.HasPickaxe) WearPickaxe(r, rng); else WearAxe(r, rng);
                 var remaining = DiscoveryPool.Where(x => !_discovered.Contains(x)).ToList();
                 // 図書館があると知識が蓄積し、発見が生まれやすくなる
                 if (remaining.Count > 0 && rng.Chance(0.008 * (HasBuilding("図書館") ? 1.5 : 1.0) * discoveryMult))
@@ -591,8 +617,11 @@ public sealed class Simulation
                 if (_ore > 0 && _wood > 0)
                 {
                     _ore--; _wood--;
-                    // 鍛冶場があると 1 回で 2 個作れて発展度も大きい
-                    _tools += HasBuilding("鍛冶場") ? 2 : 1;
+                    // 木材 1 + 鉱石 1 で斧 1 本とつるはし 1 本を作る（街の在庫に入る）。
+                    // 鍛冶場があると 1 回で 2 セット作れて発展度も大きい
+                    int sets = HasBuilding("鍛冶場") ? 2 : 1;
+                    _axeStock += sets;
+                    _pickaxeStock += sets;
                     _development += HasBuilding("鍛冶場") ? 4 : 2;
                 }
                 break;
@@ -732,12 +761,32 @@ public sealed class Simulation
     // ---------- 補助 ----------
 
     /// <summary>道具（装備）の在庫が多いほど、採掘・探索の怪我率が下がる。</summary>
-    private double InjuryMultiplier() => _tools >= 10 ? 0.5 : _tools > 0 ? 0.75 : 1.0;
+    /// <summary>道具を持っている住人は作業中の怪我が半分になる（自分の道具で身を守る）。</summary>
+    private static double InjuryMultiplier(Resident r) => r.HasAxe || r.HasPickaxe ? 0.5 : 1.0;
+
+    /// <summary>斧を持っていない住人は、街の在庫があれば 1 本受け取る。</summary>
+    private void EnsureAxe(Resident r)
+    {
+        if (!r.HasAxe && _axeStock > 0) { _axeStock--; r.HasAxe = true; }
+    }
+
+    /// <summary>つるはしを持っていない住人は、街の在庫があれば 1 本受け取る。</summary>
+    private void EnsurePickaxe(Resident r)
+    {
+        if (!r.HasPickaxe && _pickaxeStock > 0) { _pickaxeStock--; r.HasPickaxe = true; }
+    }
 
     /// <summary>道具は作業でたまに壊れる（鍛冶の需要が続くように）。</summary>
-    private void WearTool(DeterministicRandom rng)
+    /// <summary>斧の摩耗：使っているとたまに壊れる（個人所持が無くなる）。</summary>
+    private static void WearAxe(Resident r, DeterministicRandom rng)
     {
-        if (_tools > 0 && rng.Chance(0.03)) _tools--;
+        if (r.HasAxe && rng.Chance(0.03)) r.HasAxe = false;
+    }
+
+    /// <summary>つるはしの摩耗：使っているとたまに壊れる（個人所持が無くなる）。</summary>
+    private static void WearPickaxe(Resident r, DeterministicRandom rng)
+    {
+        if (r.HasPickaxe && rng.Chance(0.03)) r.HasPickaxe = false;
     }
 
     private List<Resident> Alive() => _residents.Where(r => r.IsAlive).OrderBy(r => r.Id).ToList();
@@ -765,7 +814,8 @@ public sealed class Simulation
           .Append(result.CivilizationLevel).Append('|')
           .Append(string.Join(",", result.BuildingsCompleted)).Append('|')
           .Append(result.ExtraHouses).Append('|')
-          .Append(result.FinalTools).Append('|')
+          .Append(result.FinalAxeStock).Append('|').Append(result.FinalPickaxeStock).Append('|')
+          .Append(result.AxeHolders).Append('|').Append(result.PickaxeHolders).Append('|')
           .Append(result.FinalMedicine).Append('|')
           .Append(string.Join(",", result.KnowledgeHolders.Values));
         foreach (var e in result.Log) sb.Append('\n').Append(e.Day).Append(':').Append(e.Level).Append(':').Append(e.Text);

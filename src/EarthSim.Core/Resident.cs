@@ -77,6 +77,11 @@ public sealed class Resident
     /// <summary>交流で育つ関係値。相手 Id → 親密度（決定的に Id 順で処理する）。</summary>
     public Dictionary<int, int> Affinity { get; } = new();
 
+    /// <summary>個人の道具所持：斧（伐採）とつるはし（採掘）。初期住人には各 1 本が配布される。
+    /// 生まれた子は持っておらず、街の在庫から受け取って使う。作業でたまに壊れる。</summary>
+    public bool HasAxe { get; set; }
+    public bool HasPickaxe { get; set; }
+
     /// <summary>習得済みの知識（図書館の本で学ぶ）。生まれた時は空。</summary>
     public HashSet<KnowledgeType> Knowledge { get; } = new();
 
