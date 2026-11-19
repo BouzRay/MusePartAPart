@@ -51,7 +51,7 @@ public sealed record SimulationResult
 /// </summary>
 public sealed class Simulation
 {
-    public const string SimulationVersion = "0.5.0";
+    public const string SimulationVersion = "0.6.0";
 
     private static readonly string[] DiscoveryPool =
     {
@@ -72,14 +72,14 @@ public sealed class Simulation
         new("木の柵", 15, 0),    // 街の守り：発病率が下がる
         new("住居", 25, 0),      // 出産率と休息の回復が上がる
         new("図書館", 40, 0),    // 知識の蓄積：本で学べるようになり、発見確率も上がる
+        new("木工房", 30, 0),    // 建築が速くなり、伐採の収量も上がる（要：木工房の本）
         new("倉庫", 30, 0),      // 採取の食料が増える
         new("鍛冶場", 20, 10),   // 鍛冶の生産が 2 倍になる
         new("集会所", 35, 0),    // 交流で親密度が育ちやすくなる
+        new("家", 35, 0),        // 住居より良い暮らし：出産率と休息がさらに上がる（要：家の本）
         new("診療所", 30, 0),    // 看病と自然回復が強くなる
+        new("調剤所", 25, 0),    // 調剤の生産と薬の効きが上がる（要：調剤所の本）
     };
-
-    /// <summary>知識なしで建てられる建物（図書館までが知識社会の起点）。</summary>
-    private static readonly string[] NoKnowledgeBuildings = { "木の柵", "住居", "図書館" };
 
     /// <summary>図書館の蔵書（知識の種類すべて）。住人は本で学んで知識を得る。</summary>
     private static readonly KnowledgeType[] AllKnowledge = Enum.GetValues<KnowledgeType>();
@@ -91,7 +91,21 @@ public sealed class Simulation
         KnowledgeType.Logging => "伐採",
         KnowledgeType.Carpentry => "大工",
         KnowledgeType.Pharmacy => "調剤",
+        KnowledgeType.PharmacyBuilding => "調剤所",
+        KnowledgeType.WorkshopBuilding => "木工房",
+        KnowledgeType.HouseBuilding => "家",
         _ => k.ToString(),
+    };
+
+    /// <summary>その建物を建てるのに要る知識。木の柵・住居・図書館は不要、それ以外は大工、
+    /// 建築シリーズの建物は対応する本の知識が要る。</summary>
+    private static KnowledgeType? RequiredKnowledgeFor(string buildingName) => buildingName switch
+    {
+        "木の柵" or "住居" or "図書館" => null,
+        "木工房" => KnowledgeType.WorkshopBuilding,
+        "家" => KnowledgeType.HouseBuilding,
+        "調剤所" => KnowledgeType.PharmacyBuilding,
+        _ => KnowledgeType.Carpentry,
     };
 
     private static string BookName(KnowledgeType k) => $"{KnowledgeName(k)}の本";
@@ -107,6 +121,10 @@ public sealed class Simulation
             KnowledgeType.Logging => p.Cooperativeness * 0.3 + p.Planning * 0.3 + p.Obsession * 0.2 + 10,
             KnowledgeType.Carpentry => p.Planning * 0.5 + p.Cooperativeness * 0.3 + p.Obsession * 0.2,
             KnowledgeType.Pharmacy => p.Empathy * 0.5 + p.Planning * 0.3 + p.Intuition * 0.2,
+            // 建築シリーズ：木工房・家は大工系の適性、調剤所は調剤系の適性
+            KnowledgeType.WorkshopBuilding => p.Planning * 0.5 + p.Cooperativeness * 0.3 + p.Obsession * 0.2,
+            KnowledgeType.HouseBuilding => p.Planning * 0.4 + p.Cooperativeness * 0.4 + p.Obsession * 0.2,
+            KnowledgeType.PharmacyBuilding => p.Empathy * 0.4 + p.Planning * 0.4 + p.Intuition * 0.2,
             _ => 0,
         };
     }
@@ -375,7 +393,7 @@ public sealed class Simulation
             var father = _residents.FirstOrDefault(x => x.Id == mother.PartnerId && x.IsAlive);
             if (father is null) continue;
             double p = 0.0035 * (mother.Fertility / 70.0) * (father.Fertility / 70.0)
-                       * (HasBuilding("住居") ? 1.3 : 1.0);
+                       * (HasBuilding("家") ? 1.5 : HasBuilding("住居") ? 1.3 : 1.0);
             if (!_eventRng.Chance(p)) continue;
 
             var child = CreateResident(ageDays: 0, father: father, mother: mother);
@@ -441,12 +459,13 @@ public sealed class Simulation
             if (r.Knowledge.Contains(KnowledgeType.Pharmacy) && _herbs >= 2 && _medicine < AliveCount()) scores.Add(("調剤", p.Empathy * 0.5 + p.Planning * 0.3 + 10));
             // 建築：木材があり、プロジェクトが鉱石待ちで止まっていない時だけ。
             // 増築は「住む人が増えた時」だけ必要になる。
-            // 図書館より後の建物と増築には大工の知識が要る
+            // 建物ごとに要る知識が決まっている（RequiredKnowledgeFor）
             var project = CurrentProject();
             bool waitingForOre = _projectProgress >= project.WoodCost && _ore < project.OreCost;
             bool extraHouseNeeded = project.Name != "住居の増築" || AliveCount() > 20 + _extraHouses * 5;
-            bool carpentryOk = NoKnowledgeBuildings.Contains(project.Name) || r.Knowledge.Contains(KnowledgeType.Carpentry);
-            if (_wood > 0 && !waitingForOre && extraHouseNeeded && carpentryOk)
+            var required = RequiredKnowledgeFor(project.Name);
+            bool knowledgeOk = required is null || r.Knowledge.Contains(required.Value);
+            if (_wood > 0 && !waitingForOre && extraHouseNeeded && knowledgeOk)
                 scores.Add(("建築", p.Planning * 0.5 + p.Cooperativeness * 0.3 + p.Obsession * 0.2 + 8));
             if (anyoneSick) scores.Add(("看病", p.Empathy * 0.6 + p.Planning * 0.2 + 10));
         }
@@ -505,7 +524,7 @@ public sealed class Simulation
             case "伐採":
                 r.Location = LocationType.Forest;
                 r.Job = JobType.Woodcutter;
-                _wood += rng.NextInt(3, 6) + (_tools > 0 ? 1 : 0);
+                _wood += rng.NextInt(3, 6) + (_tools > 0 ? 1 : 0) + (HasBuilding("木工房") ? 1 : 0);
                 if (rng.Chance(0.05)) _herbs++;
                 WearTool(rng);
                 break;
@@ -583,7 +602,9 @@ public sealed class Simulation
                 r.Location = LocationType.Town;
                 r.Job = JobType.Carpenter;
                 var project = CurrentProject();
-                int invest = Math.Min(5, Math.Min(project.WoodCost - _projectProgress, (int)Math.Min(5, _wood)));
+                // 木工房があると道具立てが良く、建築が速い
+                int investCap = HasBuilding("木工房") ? 8 : 5;
+                int invest = Math.Min(investCap, Math.Min(project.WoodCost - _projectProgress, (int)Math.Min(investCap, _wood)));
                 if (invest > 0)
                 {
                     _wood -= invest;
@@ -641,7 +662,7 @@ public sealed class Simulation
                 if (_herbs >= 2)
                 {
                     _herbs -= 2;
-                    _medicine++;
+                    _medicine += HasBuilding("調剤所") ? 2 : 1;   // 調剤所があると一度に 2 個作れる
                     _development += 1;
                 }
                 break;
@@ -680,12 +701,13 @@ public sealed class Simulation
                 if (target is not null)
                 {
                     bool clinic = HasBuilding("診療所");
-                    // 薬がある時は薬を使う（調剤の知識が街を救う）
+                    // 薬がある時は薬を使う（調剤の知識が街を救う）。調剤所があると薬の質が上がる
+                    bool pharmacy = HasBuilding("調剤所");
                     bool useMedicine = _medicine > 0;
                     if (useMedicine) _medicine--;
-                    target.Health = Math.Min(100, target.Health + (useMedicine ? 20 : clinic ? 14 : 8));
-                    if (target.IsSick && rng.Chance(useMedicine ? 0.7 : clinic ? 0.5 : 0.3)) target.IsSick = false;
-                    if (target.IsInjured && rng.Chance(useMedicine ? 0.7 : clinic ? 0.6 : 0.4)) target.IsInjured = false;
+                    target.Health = Math.Min(100, target.Health + (useMedicine ? (pharmacy ? 26 : 20) : clinic ? 14 : 8));
+                    if (target.IsSick && rng.Chance(useMedicine ? (pharmacy ? 0.8 : 0.7) : clinic ? 0.5 : 0.3)) target.IsSick = false;
+                    if (target.IsInjured && rng.Chance(useMedicine ? (pharmacy ? 0.8 : 0.7) : clinic ? 0.6 : 0.4)) target.IsInjured = false;
                 }
                 break;
             }
@@ -698,7 +720,7 @@ public sealed class Simulation
                 r.Location = LocationType.Town;
                 r.Stamina = Math.Min(100, r.Stamina + 30 + Math.Min(10, _extraHouses * 2));
                 r.Fatigue = Math.Max(0, r.Fatigue - 40);
-                r.Health = Math.Min(100, r.Health + 1.5 + (HasBuilding("住居") ? 1.0 : 0));
+                r.Health = Math.Min(100, r.Health + 1.5 + (HasBuilding("家") ? 2.0 : HasBuilding("住居") ? 1.0 : 0));
                 break;
 
             default: // 様子見

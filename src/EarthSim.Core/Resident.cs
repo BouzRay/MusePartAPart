@@ -27,8 +27,15 @@ public enum JobType { None, Woodcutter, Blacksmith, Explorer, Carpenter, Pharmac
 
 public enum LocationType { Town, Forest, Mine, Cave, Dungeon }
 
-/// <summary>図書館の本から得る知識。住人は最初は全て持っていない（知識の基本原則）。</summary>
-public enum KnowledgeType { Blacksmithing, Mining, Logging, Carpentry, Pharmacy }
+/// <summary>
+/// 図書館の本から得る知識。住人は最初は全て持っていない（知識の基本原則）。
+/// 前半 5 つが基本書、後半 3 つが建築シリーズ（対応する建物を建てるための知識）。
+/// </summary>
+public enum KnowledgeType
+{
+    Blacksmithing, Mining, Logging, Carpentry, Pharmacy,
+    PharmacyBuilding, WorkshopBuilding, HouseBuilding,
+}
 
 /// <summary>住人 1 人。HP/MP ではなく身体・性格・状態で管理する（仕様 v0）。</summary>
 public sealed class Resident
